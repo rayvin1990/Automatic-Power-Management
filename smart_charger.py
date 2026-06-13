@@ -12,11 +12,6 @@ import logging
 import sys
 import os
 import json
-import base64
-import hashlib
-import random
-import tempfile
-import threading
 import atexit
 import ctypes
 from datetime import datetime
@@ -29,7 +24,6 @@ try:
 except ModuleNotFoundError:
     from Cryptodome.Cipher import ARC4
 
-from PIL import Image
 from colorama import Fore, Style, init
 
 # 导入 token_extractor 中已验证的云端连接器
@@ -46,10 +40,7 @@ _te.args = type('Args', (), {
 })()
 
 # 覆盖 print_if_interactive，让它在我们的场景下也能输出
-_orig_print = _te.print_if_interactive
-def _my_print(value=""):
-    print(value)
-_te.print_if_interactive = _my_print
+_te.print_if_interactive = lambda value="": print(value)
 
 from token_extractor import QrCodeXiaomiCloudConnector, XiaomiCloudConnector
 
@@ -62,6 +53,10 @@ CONFIG_EXAMPLE = os.path.join(SCRIPT_DIR, "config.example.json")
 CREDENTIALS_FILE = os.path.join(SCRIPT_DIR, ".mi_credentials.json")
 LOG_FILE = os.path.join(SCRIPT_DIR, "charger_log.txt")
 QR_IMAGE_PATH = os.path.join(SCRIPT_DIR, "qr_login.jpg")
+
+# load_config() runs before setup_logging(), so this placeholder prevents first-run
+# config warnings from crashing the script when config.json is missing or invalid.
+logger = logging.getLogger(__name__)
 
 
 def load_config():
@@ -89,18 +84,35 @@ def load_config():
 
 
 _cfg = load_config()
-
-PLUG_DID = _cfg["plug_did"]                 # 设备ID（必填）
-PLUG_MODEL = _cfg["plug_model"]              # 设备型号
-CHARGE_ON_THRESHOLD = _cfg["charge_on_threshold"]   # 低于 → 开始充电 (%)
-CHARGE_OFF_THRESHOLD = _cfg["charge_off_threshold"]  # 高于 → 停止充电 (%)
-CHECK_INTERVAL = _cfg["check_interval"]       # 检测间隔（秒）
-SERVER = _cfg["server"]                       # 服务器区域
 # ==================================================
 
 # 全局引用，关机时使用
 _connector_ref = None
 _shutting_down = False
+_manual_stop_requested = False
+_windows_ctrl_handler_ref = None
+
+
+def validate_config(cfg):
+    """校验配置，避免用空 DID 或异常阈值控制真实插座。"""
+    did = str(cfg.get("plug_did", "")).strip()
+    if not did or did == "你的设备DID":
+        raise ValueError("config.json 中的 plug_did 不能为空，请填写真实设备 DID")
+
+    try:
+        cfg["charge_on_threshold"] = int(cfg["charge_on_threshold"])
+        cfg["charge_off_threshold"] = int(cfg["charge_off_threshold"])
+        cfg["check_interval"] = int(cfg["check_interval"])
+    except (KeyError, TypeError, ValueError) as e:
+        raise ValueError("充电阈值、断电阈值和检测间隔必须是整数") from e
+
+    if not 0 <= cfg["charge_on_threshold"] < cfg["charge_off_threshold"] <= 100:
+        raise ValueError("阈值必须满足 0 <= charge_on_threshold < charge_off_threshold <= 100")
+
+    if cfg["check_interval"] <= 0:
+        raise ValueError("check_interval 必须大于 0 秒")
+
+    return cfg
 
 
 def setup_logging():
@@ -128,6 +140,19 @@ def setup_logging():
 
 logger = setup_logging()
 
+try:
+    _cfg = validate_config(_cfg)
+except ValueError as e:
+    logger.error(f"❌ 配置错误: {e}")
+    raise SystemExit(1) from e
+
+PLUG_DID = _cfg["plug_did"]                 # 设备ID（必填）
+PLUG_MODEL = _cfg["plug_model"]              # 设备型号
+CHARGE_ON_THRESHOLD = _cfg["charge_on_threshold"]   # 低于 → 开始充电 (%)
+CHARGE_OFF_THRESHOLD = _cfg["charge_off_threshold"]  # 高于 → 停止充电 (%)
+CHECK_INTERVAL = _cfg["check_interval"]       # 检测间隔（秒）
+SERVER = _cfg["server"]                       # 服务器区域
+
 
 # ==================================================
 # 关机/注销时自动断电
@@ -136,6 +161,8 @@ logger = setup_logging()
 def _emergency_turn_off_plug():
     """紧急断电：关机/注销时快速关闭插座（仅在插座通电时执行）"""
     global _connector_ref, _shutting_down
+    if _manual_stop_requested:
+        return
     if _shutting_down:
         return
     _shutting_down = True
@@ -230,13 +257,14 @@ def _windows_ctrl_handler(ctrl_type):
 
 def register_shutdown_handler():
     """注册 Windows 关机/注销事件处理"""
+    global _windows_ctrl_handler_ref
     try:
         # 方式1: ctypes 设置控制台控制处理器
         CTRL_HANDLER_TYPE = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_uint)
         handler = CTRL_HANDLER_TYPE(_windows_ctrl_handler)
         ctypes.windll.kernel32.SetConsoleCtrlHandler(handler, True)
-        # 保持引用防止被垃圾回收
-        _windows_ctrl_handler_ref = handler  # noqa: F841
+        # 保持模块级引用，防止 ctypes 回调被垃圾回收。
+        _windows_ctrl_handler_ref = handler
 
         # 方式2: atexit 作为后备
         atexit.register(_emergency_turn_off_plug)
@@ -255,7 +283,7 @@ def save_credentials(connector):
         "serviceToken": connector._serviceToken,
         "login_time": datetime.now().isoformat(),
     }
-    with open(CREDENTIALS_FILE, "w") as f:
+    with open(CREDENTIALS_FILE, "w", encoding="utf-8") as f:
         json.dump(creds, f)
     logger.info("✅ 登录凭证已缓存到 " + CREDENTIALS_FILE)
 
@@ -265,14 +293,14 @@ def load_credentials():
     if not os.path.exists(CREDENTIALS_FILE):
         return None
     try:
-        with open(CREDENTIALS_FILE) as f:
+        with open(CREDENTIALS_FILE, encoding="utf-8") as f:
             creds = json.load(f)
         connector = QrCodeXiaomiCloudConnector()
         connector.userId = creds["userId"]
         connector._ssecurity = creds["ssecurity"]
         connector._serviceToken = creds["serviceToken"]
         # 快速验证
-        test = connector.get_homes("cn")
+        test = connector.get_homes(SERVER)
         if test is not None:
             logger.info("✅ 已加载缓存的登录凭证")
             return connector
@@ -376,32 +404,6 @@ def get_device_power(connector, did):
     return True
 
 
-def _set_power_legacy(connector, did, state_on=True):
-    """旧版 miIO 控制方式"""
-    url = XiaomiCloudConnector.get_api_url(SERVER) + "/v2/device/control"
-    params = {
-        "data": json.dumps({
-            "did": did,
-            "method": "set_power",
-            "params": ["on" if state_on else "off"]
-        })
-    }
-    result = connector.execute_api_call_encrypted(url, params)
-    if result is not None:
-        code = result.get("code", -1)
-        if code == 0:
-            icon = "✅" if state_on else "🔴"
-            text = "通电！开始充电 ⚡" if state_on else "断电！停止充电 🔋"
-            logger.info(f"{icon} 插座{text}")
-            return True
-        else:
-            logger.error(f"❌ 控制失败: {result}")
-            return False
-    else:
-        logger.error("❌ API无响应")
-        return False
-
-
 def get_battery_info():
     """获取笔记本电池信息"""
     bat = psutil.sensors_battery()
@@ -483,6 +485,8 @@ def qr_login():
 
 
 def main():
+    global _connector_ref, _manual_stop_requested
+
     print()
     print(f"{Fore.CYAN}{'='*58}")
     print("  ⚡ 米家智能插座自动充电管理器")
@@ -514,7 +518,6 @@ def main():
     logger.info("🧪 测试云端连接...")
 
     # 保存全局引用（关机时使用）
-    global _connector_ref
     _connector_ref = connector
 
     # 注册关机自动断电处理
@@ -566,11 +569,11 @@ def main():
             action = None
 
             if need_off and plugged and last_action != "off":
-                action = "off"
-                set_device_power(connector, PLUG_DID, False)
+                if set_device_power(connector, PLUG_DID, False):
+                    action = "off"
             elif need_on and not plugged and last_action != "on":
-                action = "on"
-                set_device_power(connector, PLUG_DID, True)
+                if set_device_power(connector, PLUG_DID, True):
+                    action = "on"
 
             if action:
                 last_action = action
@@ -598,6 +601,7 @@ def main():
                 logger.info(f"💓 存活检测 | 电量: {pct}% | {charge_text}{action_hint}")
 
         except KeyboardInterrupt:
+            _manual_stop_requested = True
             logger.info("\n\n🛑 手动停止监控")
             break
         except Exception as e:
