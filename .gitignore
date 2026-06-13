@@ -1,0 +1,31 @@
+# 敏感信息 - 凭证和Token
+.mi_credentials.json
+config.json
+devices_tokens.json
+
+# 日志和临时文件
+charger_log.txt
+stdout.log
+stderr.log
+stdout2.log
+stderr2.log
+qr_login.jpg
+output.txt
+test_output.txt
+
+# 测试和调试脚本（包含硬编码Token/IP）
+test_plug.py
+scan_devices.py
+get_xiaomi_tokens.py
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# 工具目录
+.workbuddy/
+
+# 系统文件
+Thumbs.db
+.DS_Store
