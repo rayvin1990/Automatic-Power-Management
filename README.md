@@ -1,134 +1,217 @@
-# ⚡ Mi Smart Plug Auto Charger
+# Mi Smart Plug Auto Charger
 
-米家智能插座自动充电管理器 —— 低电量自动通电、满电自动断电，保护笔记本电池寿命。
+Use a Mi Home smart plug to keep a Windows laptop battery between two healthy thresholds.
 
-## ✨ 功能特性
+This project watches your laptop battery locally. When the battery is low, it turns on the Mi Home plug. When the battery is high, it turns the plug off. Before shutdown, it also tries to power off the plug so the laptop is not left charging overnight.
 
-- 🔋 **自动充放电管理**：电量低于阈值自动通电充电，高于阈值自动断电
-- 📱 **二维码扫码登录**：无需输入密码，手机米家APP扫码即可
-- 🛡️ **关机自动断电**：电脑关机/重启/注销时自动关闭插座（三层保障）
-- 🔄 **凭证缓存**：登录一次，长期有效，过期自动重新登录
-- 🪟 **开机自启**：VBS 静默启动，后台运行无干扰
-- 💓 **存活检测**：每小时写入心跳日志，确认脚本运行中
+Default policy:
 
-## 📋 前提条件
+- Start charging when battery is at or below `20%`.
+- Stop charging when battery is at or above `80%`.
+- On shutdown, turn the plug off only if the laptop is currently charging.
 
-- Windows 笔记本电脑
-- 米家智能插座（WiFi版）
-- Python 3.8+
-- 插座和电脑在同一小米账号下
+## Why
 
-## 🚀 快速开始
+Many laptops spend most of their life plugged in. If you already have a Mi Home smart plug, this script turns it into a simple battery-care controller without needing a full smart-home platform.
 
-### 1. 安装依赖
+## Features
+
+- Battery-aware charging: local battery status decides when to turn the plug on or off.
+- Mi Home QR login: scan once with the Mi Home app; credentials are cached locally.
+- Shutdown protection: console handler, `atexit`, and optional Windows scheduled task.
+- Quiet startup: optional VBS launcher for background startup.
+- Local-first safety: device credentials and runtime logs stay on your machine.
+
+## Requirements
+
+- Windows laptop with battery status available through Windows.
+- Mi Home / Xiaomi smart plug under the same Xiaomi account.
+- Python 3.8 or newer.
+- Network access from the laptop to Xiaomi cloud APIs.
+
+Tested primarily with Mi Home Wi-Fi smart plugs on the China server (`cn`).
+
+## Quick Start
+
+### 1. Install dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+If you prefer installing manually:
 
 ```bash
 pip install psutil colorama requests pycryptodome Pillow
 ```
 
-### 2. 配置设备信息
+### 2. Find your plug information
 
-复制配置模板并填写你的插座信息：
+Run the token helper and scan the QR code with the Mi Home app:
 
 ```bash
+python token_extractor.py
+```
+
+After login, find the target plug's `did` and model value.
+
+### 3. Create config
+
+```bat
 copy config.example.json config.json
 ```
 
-编辑 `config.json`：
+Edit `config.json`:
 
 ```json
 {
-    "plug_did": "你的设备DID",
-    "plug_model": "你的设备型号",
-    "server": "cn",
-    "charge_on_threshold": 20,
-    "charge_off_threshold": 80,
-    "check_interval": 600
+  "plug_did": "your-device-did",
+  "plug_model": "your-device-model",
+  "server": "cn",
+  "charge_on_threshold": 20,
+  "charge_off_threshold": 80,
+  "check_interval": 60
 }
 ```
 
-> 💡 如何获取 `plug_did` 和 `plug_model`？运行 `python token_extractor.py` 登录后可查看所有设备信息。
-
-### 3. 运行
+### 4. Run the charger
 
 ```bash
 python smart_charger.py
 ```
 
-首次运行会弹出二维码，用手机米家APP扫码登录即可。
+The first run may ask you to scan a QR code. After that, the login cache is reused.
 
-### 4. 设置开机自启（可选）
+### 5. Optional: run silently on login
 
-双击 `启动智能充电(静默).vbs` 即可后台启动。将此 VBS 文件复制到 Windows 启动文件夹实现开机自启：
+Double-click:
 
+```text
+启动智能充电(静默).vbs
 ```
+
+To start it automatically after login, put that VBS file in:
+
+```text
 %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\
 ```
 
-### 5. 注册关机断电任务（可选，需管理员权限）
+### 6. Optional: register shutdown protection
 
-右键 `注册关机断电任务.bat` → 以管理员身份运行
+Right-click this file and run it as administrator:
 
-## ⚙️ 配置说明
-
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `plug_did` | 插座设备ID（必填） | - |
-| `plug_model` | 插座设备型号 | - |
-| `server` | 小米服务器区域 | `cn` |
-| `charge_on_threshold` | 低电量阈值（%） | `20` |
-| `charge_off_threshold` | 高电量阈值（%） | `80` |
-| `check_interval` | 检测间隔（秒） | `600` |
-
-## 📁 文件说明
-
-| 文件 | 说明 |
-|------|------|
-| `smart_charger.py` | 主程序：电池监控 + 自动充放电 |
-| `shutdown_turn_off_plug.py` | 独立关机脚本：由计划任务调用 |
-| `token_extractor.py` | 小米云端API连接器（源自 [PiotrMachowski/Xiaomi-cloud-tokens-extractor](https://github.com/PiotrMachowski/Xiaomi-cloud-tokens-extractor)） |
-| `config.json` | 用户配置（**不入库**） |
-| `config.example.json` | 配置模板 |
-| `启动智能充电(静默).vbs` | VBS 静默启动脚本 |
-| `注册关机断电任务.bat` | 注册Windows关机计划任务 |
-
-## 🔒 安全说明
-
-- **`config.json`** 和 **`.mi_credentials.json`** 已在 `.gitignore` 中排除，**不会上传到仓库**
-- 登录凭证缓存在本地 `.mi_credentials.json`，仅存储 `userId`、`ssecurity`、`serviceToken`
-- 插座状态通过 `psutil.sensors_battery().power_plugged` 本地判断，减少云端API调用
-
-## 🏗️ 工作原理
-
-```
-┌──────────────────────────────────────────┐
-│         每 10 分钟检测一次电池状态          │
-├──────────────────────────────────────────┤
-│  电量 ≤ 20% 且 未充电  →  插座通电（开始充电） │
-│  电量 ≥ 80% 且 充电中  →  插座断电（停止充电） │
-│  其他情况              →  不操作            │
-└──────────────────────────────────────────┘
-
-关机保护（三层）：
-  1. ctypes 控制台事件处理器 → 捕获关机信号
-  2. atexit 回调 → Python正常退出时触发
-  3. Windows计划任务 → 调用 shutdown_turn_off_plug.py
+```text
+注册关机断电任务.bat
 ```
 
-## 🤝 贡献
+It registers:
 
-欢迎 PR！可以改进的方向：
+- `SmartCharger_ShutdownTurnOff`: powers off the plug when Windows reports shutdown/logoff.
+- `SmartCharger_AutoStart`: starts the silent VBS launcher on login.
 
-- [ ] 支持 macOS / Linux
-- [ ] 桌面通知（电量变化时提醒）
-- [ ] Web UI 管理面板
-- [ ] 多插座支持
-- [ ] 更智能的充电策略（基于时间段、使用习惯等）
+## Configuration
 
-## 📄 许可证
+| Field | Description | Recommended |
+| --- | --- | --- |
+| `plug_did` | Target Mi Home plug device ID. Required. | copied from `token_extractor.py` |
+| `plug_model` | Target Mi Home plug model. | copied from `token_extractor.py` |
+| `server` | Xiaomi cloud region. | `cn` |
+| `charge_on_threshold` | Turn plug on when battery is at or below this percent. | `20` |
+| `charge_off_threshold` | Turn plug off when battery is at or above this percent. | `80` |
+| `check_interval` | Battery check interval in seconds. | `60` to `600` |
 
-MIT License
+## How It Works
 
-## 🙏 致谢
+```text
+Windows battery API
+        |
+        v
+smart_charger.py
+        |
+        | local rule:
+        | battery <= 20% and unplugged  -> plug on
+        | battery >= 80% and charging   -> plug off
+        v
+Xiaomi cloud API
+        |
+        v
+Mi Home smart plug
+```
 
-- [PiotrMachowski/Xiaomi-cloud-tokens-extractor](https://github.com/PiotrMachowski/Xiaomi-cloud-tokens-extractor) - 小米云端API连接器
+Shutdown protection:
+
+```text
+Windows shutdown/logoff
+        |
+        v
+shutdown_turn_off_plug.py
+        |
+        | if laptop is charging:
+        v
+turn Mi Home plug off
+```
+
+## Files
+
+| File | Purpose |
+| --- | --- |
+| `smart_charger.py` | Main battery monitor and plug controller. |
+| `shutdown_turn_off_plug.py` | Standalone shutdown protection script. |
+| `token_extractor.py` | Xiaomi cloud login and device discovery helper. |
+| `config.example.json` | Template for local config. |
+| `config.json` | Your local config. Ignored by Git. |
+| `.mi_credentials.json` | Local Xiaomi login cache. Ignored by Git. |
+| `启动智能充电.bat` | Console launcher. |
+| `启动智能充电(静默).vbs` | Silent background launcher. |
+| `注册关机断电任务.bat` | Windows scheduled task installer. |
+
+## Safety Notes
+
+- `config.json`, `.mi_credentials.json`, and `devices_tokens.json` are ignored by Git.
+- Credentials are stored locally and are not uploaded by this project.
+- Start with the default `20%` / `80%` thresholds before experimenting.
+- If Xiaomi cloud control fails, the script logs the error and waits for the next check instead of repeatedly toggling the plug.
+- The shutdown script skips plug control when Windows reports the laptop is not charging.
+- Keep a manual way to turn the plug on/off in the Mi Home app while testing.
+
+## Troubleshooting
+
+### `psutil.sensors_battery()` returns no battery
+
+This usually means Windows is not exposing a laptop battery to Python. The project currently targets Windows laptops, not desktops.
+
+### The scheduled task does not register
+
+Run `注册关机断电任务.bat` as administrator. The script tries `py`, then `python`, and stops with a clear message if Python is not available.
+
+### The plug does not switch
+
+Check:
+
+- `plug_did` matches the target plug.
+- `server` matches your Mi Home account region.
+- `.mi_credentials.json` exists after QR login.
+- `charger_log.txt` for API errors.
+
+## Roadmap
+
+- [ ] macOS and Linux battery adapters.
+- [ ] Tray icon and desktop notifications.
+- [ ] Multi-plug configuration.
+- [ ] Home Assistant integration.
+- [ ] Battery health and charging history dashboard.
+- [ ] Safer first-run diagnostics for device model/API compatibility.
+
+## Contributing
+
+PRs are welcome. Good first issues include docs, device compatibility notes, startup scripts, and support for more platforms.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for local setup and PR expectations.
+
+## Credits
+
+- [PiotrMachowski/Xiaomi-cloud-tokens-extractor](https://github.com/PiotrMachowski/Xiaomi-cloud-tokens-extractor) for Xiaomi cloud token extraction patterns.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

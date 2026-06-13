@@ -1,8 +1,8 @@
 {
-    "plug_did": "你的设备DID",
-    "plug_model": "你的设备型号",
-    "server": "cn",
-    "charge_on_threshold": 20,
-    "charge_off_threshold": 80,
-    "check_interval": 600
+  "plug_did": "your-device-did",
+  "plug_model": "your-device-model",
+  "server": "cn",
+  "charge_on_threshold": 20,
+  "charge_off_threshold": 80,
+  "check_interval": 60
 }

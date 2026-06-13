@@ -1,37 +1,53 @@
 @echo off
-chcp 936 >nul
+chcp 65001 >nul
+setlocal
+
 echo ==========================================================
 echo   Mi Smart Plug - Register Shutdown and Startup Tasks
 echo ==========================================================
 echo.
-echo Registering Windows scheduled task (admin required)...
-echo.
-echo NOTE: Please edit the Python path below to match your system!
+echo Registering Windows scheduled tasks. Administrator rights are recommended.
 echo.
 
-REM === Edit these paths to match your Python installation ===
-set PYTHONW=C:\Python313\pythonw.exe
-set PYTHON=C:\Python313\python.exe
-set SCRIPT_DIR=%~dp0
-REM ==========================================================
+set "SCRIPT_DIR=%~dp0"
+set "PYTHON_CMD="
 
-schtasks /Create /TN "SmartCharger_ShutdownTurnOff" /TR "\"%PYTHON%\" \"%SCRIPT_DIR%shutdown_turn_off_plug.py\"" /SC ONEVENT /EC System /MO "*[System[Provider[@Name='User32'] and EventID=1074]]" /F
+where py >nul 2>nul
+if %errorlevel% equ 0 (
+    set "PYTHON_CMD=py"
+) else (
+    where python >nul 2>nul
+    if %errorlevel% equ 0 (
+        set "PYTHON_CMD=python"
+    )
+)
+
+if "%PYTHON_CMD%"=="" (
+    echo [ERROR] Python was not found in PATH.
+    echo Install Python 3.8+ or add it to PATH, then run this script again.
+    pause
+    exit /b 1
+)
+
+echo Using Python command: %PYTHON_CMD%
+echo.
+
+schtasks /Create /TN "SmartCharger_ShutdownTurnOff" /TR "\"%PYTHON_CMD%\" \"%SCRIPT_DIR%shutdown_turn_off_plug.py\"" /SC ONEVENT /EC System /MO "*[System[Provider[@Name='User32'] and EventID=1074]]" /F
 
 if %errorlevel% equ 0 (
     echo.
-    echo [OK] Shutdown task registered!
+    echo [OK] Shutdown event task registered.
 ) else (
     echo.
-    echo [!] Event trigger failed, trying OnLogoff...
-    schtasks /Create /TN "SmartCharger_ShutdownTurnOff" /TR "\"%PYTHON%\" \"%SCRIPT_DIR%shutdown_turn_off_plug.py\"" /SC ONLOGOFF /F
+    echo [WARN] Event trigger failed. Trying logoff trigger...
+    schtasks /Create /TN "SmartCharger_ShutdownTurnOff" /TR "\"%PYTHON_CMD%\" \"%SCRIPT_DIR%shutdown_turn_off_plug.py\"" /SC ONLOGOFF /F
     if %errorlevel% equ 0 (
         echo.
-        echo [OK] Logoff task registered!
+        echo [OK] Logoff task registered.
     ) else (
         echo.
-        echo [!] Auto-register failed.
-        echo     smart_charger.py has built-in shutdown protection.
-        echo     It will auto power-off the plug if it is running.
+        echo [WARN] Auto-register failed.
+        echo smart_charger.py still has built-in shutdown protection while it is running.
     )
 )
 
@@ -44,12 +60,11 @@ echo.
 schtasks /Create /TN "SmartCharger_AutoStart" /TR "wscript.exe \"%SCRIPT_DIR%启动智能充电(静默).vbs\"" /SC ONLOGON /F /RL LIMITED
 
 if %errorlevel% equ 0 (
-    echo [OK] Auto-start on login registered!
+    echo [OK] Auto-start on login registered.
 ) else (
-    echo [!] Auto-start registration failed.
+    echo [WARN] Auto-start registration failed.
 )
 
 echo.
-echo ==========================================================
 echo Done. Press any key to exit...
 pause >nul
