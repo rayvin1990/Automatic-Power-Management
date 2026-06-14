@@ -311,7 +311,7 @@ def load_credentials():
         with open(CREDENTIALS_FILE, encoding="utf-8") as f:
             creds = json.load(f)
         connector = QrCodeXiaomiCloudConnector()
-        connector.userId = creds["userId"]
+        connector.userId = str(creds["userId"])  # 确保 userId 为字符串
         connector._ssecurity = creds["ssecurity"]
         connector._serviceToken = creds["serviceToken"]
         # 快速验证

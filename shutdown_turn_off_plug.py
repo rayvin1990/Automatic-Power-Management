@@ -91,7 +91,7 @@ def turn_off_plug():
 
     try:
         connector = QrCodeXiaomiCloudConnector()
-        connector.userId = creds["userId"]
+        connector.userId = str(creds["userId"])  # 确保 userId 为字符串
         connector._ssecurity = creds["ssecurity"]
         connector._serviceToken = creds["serviceToken"]
 
