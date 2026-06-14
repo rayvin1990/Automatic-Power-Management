@@ -224,4 +224,4 @@ malfunction, or data loss. Use at your own risk.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+Personal & Educational Use only. Commercial use is strictly prohibited. See [LICENSE](LICENSE).
