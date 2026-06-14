@@ -5,6 +5,21 @@
 
 使用方法：
   python smart_charger.py
+
+免责声明 / Disclaimer
+---------------------
+本脚本通过非官方、逆向工程的方式调用小米云端 API，并非小米官方
+授权或提供的接口。脚本仅供个人学习、研究目的使用，**严禁用于商业
+用途**。使用本脚本所产生的任何风险（包括但不限于账号被封禁、设备
+异常、数据泄露等）由使用者自行承担。作者不对因使用本脚本造成的
+任何直接或间接损失负责。
+
+This script uses a reverse-engineered, unofficial Xiaomi cloud API.
+It is intended for personal, educational, and research purposes ONLY.
+**Commercial use is strictly prohibited.** The author assumes no
+responsibility for any consequences arising from the use of this
+software, including but not limited to account suspension, device
+malfunction, or data loss. Use at your own risk.
 """
 
 import time

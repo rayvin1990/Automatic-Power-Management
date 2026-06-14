@@ -212,6 +212,16 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for local setup and PR expectations.
 
 - [PiotrMachowski/Xiaomi-cloud-tokens-extractor](https://github.com/PiotrMachowski/Xiaomi-cloud-tokens-extractor) for Xiaomi cloud token extraction patterns.
 
+## Disclaimer
+
+**This project is NOT affiliated with, authorized by, or endorsed by Xiaomi Inc.**
+
+This software uses a reverse-engineered, unofficial Xiaomi cloud API. It is provided
+for **personal, educational, and research purposes only**. **Commercial use is strictly
+prohibited.** The author assumes no responsibility for any consequences arising from
+the use of this software, including but not limited to account suspension, device
+malfunction, or data loss. Use at your own risk.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
