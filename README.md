@@ -109,6 +109,24 @@ It registers:
 - `SmartCharger_ShutdownTurnOff`: powers off the plug when Windows reports shutdown/logoff.
 - `SmartCharger_AutoStart`: starts the silent VBS launcher on login.
 
+### 7. Optional: enable sleep-mode battery checks
+
+When the laptop sleeps, `smart_charger.py` pauses and cannot monitor battery.
+To keep monitoring while the PC sleeps, register a wake-up task:
+
+Right-click this file and run it as administrator:
+
+```text
+注册唤醒检测任务.bat
+```
+
+It creates `SmartCharger_WakeCheck`, a Windows scheduled task that:
+- Wakes the PC from sleep every 10 minutes.
+- Runs `quick_check.py` (a lightweight one-shot battery check).
+- The PC goes back to sleep automatically after the check.
+
+This ensures your laptop still gets charged when idle, and stops charging when full, even while sleeping.
+
 ## Configuration
 
 | Field | Description | Recommended |
@@ -126,7 +144,7 @@ It registers:
 Windows battery API
         |
         v
-smart_charger.py
+smart_charger.py (always-on monitor)
         |
         | local rule:
         | battery <= 20% and unplugged  -> plug on
@@ -136,6 +154,20 @@ Xiaomi cloud API
         |
         v
 Mi Home smart plug
+
+--- while sleeping ---
+
+Windows scheduled task (every 10 min, WakeToRun)
+        |
+        v
+quick_check.py (one-shot check, ~3 sec)
+        |
+        | same rule as above
+        v
+Xiaomi cloud API -> Mi Home smart plug
+        |
+        v
+PC goes back to sleep
 ```
 
 Shutdown protection:
@@ -156,6 +188,7 @@ turn Mi Home plug off
 | File | Purpose |
 | --- | --- |
 | `smart_charger.py` | Main battery monitor and plug controller. |
+| `quick_check.py` | Lightweight one-shot battery check for wake-from-sleep. |
 | `shutdown_turn_off_plug.py` | Standalone shutdown protection script. |
 | `token_extractor.py` | Xiaomi cloud login and device discovery helper. |
 | `config.example.json` | Template for local config. |
@@ -164,6 +197,7 @@ turn Mi Home plug off
 | `启动智能充电.bat` | Console launcher. |
 | `启动智能充电(静默).vbs` | Silent background launcher. |
 | `注册关机断电任务.bat` | Windows scheduled task installer. |
+| `注册唤醒检测任务.bat` | Windows wake-from-sleep task installer. |
 
 ## Safety Notes
 
