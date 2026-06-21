@@ -29,6 +29,8 @@ import os
 import json
 import atexit
 import ctypes
+import subprocess
+import threading
 from datetime import datetime
 
 import requests
@@ -106,6 +108,29 @@ _connector_ref = None
 _shutting_down = False
 _manual_stop_requested = False
 _windows_ctrl_handler_ref = None
+_consecutive_api_failures = 0  # API 连续失败计数，用于判断是否需要刷新凭证
+_MAX_API_FAILURES = 3  # 连续失败超过此数则强制刷新凭证
+
+# ==================== 睡眠管理 ====================
+# 充电时阻止系统自动睡眠（允许屏幕关闭），断电后恢复
+ES_CONTINUOUS = 0x80000000
+ES_SYSTEM_REQUIRED = 0x00000001
+
+
+def prevent_sleep():
+    """阻止系统自动睡眠，但允许屏幕关闭"""
+    try:
+        ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
+    except Exception:
+        pass
+
+
+def allow_sleep():
+    """恢复系统自动睡眠"""
+    try:
+        ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS)
+    except Exception:
+        pass
 
 
 def validate_config(cfg):
@@ -128,6 +153,59 @@ def validate_config(cfg):
         raise ValueError("check_interval 必须大于 0 秒")
 
     return cfg
+
+
+# ==================== 状态提示（无通知API依赖）====================
+# 安全策略限制：PowerShell/wscript/eventcreate 均可能被拦截
+# 方案：写状态文件到桌面（通过注册表获取真实桌面路径）
+# 用户随时可以在桌面看到 smart_charger_status.json 了解脚本状态
+
+# 正确获取桌面路径（支持中文/非标准路径）
+try:
+    import ctypes
+    buf = ctypes.create_unicode_buffer(512)
+    # CSIDL_DESKTOP = 0x0000
+    ctypes.windll.shell32.SHGetFolderPathW(None, 0x0000, None, 0, buf)
+    DESKTOP = buf.value
+except Exception:
+    DESKTOP = os.path.join(os.path.expanduser('~'), 'Desktop')
+
+STATUS_FILE = os.path.join(DESKTOP, 'smart_charger_status.json')
+
+
+def write_status(status_dict):
+    """将运行状态写入桌面上的 JSON 文件，供用户随时查看"""
+    try:
+        status_dict['updated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        with open(STATUS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(status_dict, f, ensure_ascii=False, indent=2)
+    except Exception:
+        # 桌面不可写时回退到脚本目录
+        try:
+            fallback = os.path.join(SCRIPT_DIR, 'smart_charger_status.json')
+            status_dict['updated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            with open(fallback, 'w', encoding='utf-8') as f:
+                json.dump(status_dict, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+
+def show_notification(title, message, icon='info'):
+    """桌面通知的替代方案：
+    1. 写状态文件（桌面上的 smart_charger_status.json）
+    2. 尝试写入 Windows 事件日志（被拦截则跳过）
+    """
+    try:
+        event_type = {'info': 'INFORMATION', 'warning': 'WARNING', 'error': 'ERROR'}.get(icon, 'INFORMATION')
+        subprocess.Popen(
+            ['eventcreate', '/ID', '1000', '/L', 'APPLICATION',
+             '/T', event_type, '/SO', 'SmartCharger', '/D', f'{title} {message}'],
+            creationflags=0x08000000,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+    except Exception:
+        pass
 
 
 def setup_logging():
@@ -181,6 +259,9 @@ def _emergency_turn_off_plug():
     if _shutting_down:
         return
     _shutting_down = True
+
+    # 恢复系统睡眠状态
+    allow_sleep()
 
     log_msg = f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🔴 检测到关机/注销事件，检查插座状态..."
 
@@ -304,7 +385,7 @@ def save_credentials(connector):
 
 
 def load_credentials():
-    """加载已保存的认证信息"""
+    """加载已保存的认证信息（凭证过期时不清除文件，返回过期标记让上层处理）"""
     if not os.path.exists(CREDENTIALS_FILE):
         return None
     try:
@@ -320,18 +401,41 @@ def load_credentials():
             logger.info("✅ 已加载缓存的登录凭证")
             return connector
         else:
-            logger.warning("⚠️ 缓存凭证已过期")
-            os.remove(CREDENTIALS_FILE)
+            # 凭证过期但不清除文件 — 留给 refresh_credentials 处理
+            logger.warning("⚠️ 缓存凭证已过期，将在后台自动刷新")
             return None
     except Exception as e:
         logger.warning(f"⚠️ 加载缓存失败: {e}")
-        if os.path.exists(CREDENTIALS_FILE):
-            os.remove(CREDENTIALS_FILE)
         return None
 
 
+def refresh_credentials():
+    """凭证过期时自动刷新：重新扫码登录
+    在 pythonw.exe 下无法弹二维码，所以只在有窗口时扫码，
+    否则写日志提醒用户手动重新登录。
+    """
+    # 清除过期凭证文件
+    if os.path.exists(CREDENTIALS_FILE):
+        try:
+            os.remove(CREDENTIALS_FILE)
+        except Exception:
+            pass
+
+    # pythonw.exe 模式下无法交互扫码
+    if sys.stdout is None or not sys.stdin:
+        logger.warning("⚠️ 凭证过期且处于静默模式，无法扫码登录。请手动运行 python smart_charger.py 重新登录")
+        show_notification("⚠️ 登录凭证过期", "请手动运行 python smart_charger.py 重新扫码登录", icon='warning')
+        return None
+
+    # 有窗口 → 弹二维码扫码
+    connector = qr_login()
+    if connector is not None:
+        logger.info("✅ 凭证刷新成功")
+    return connector
+
+
 def set_device_power(connector, did, state_on=True):
-    """通过云端API控制插座开关"""
+    """通过云端API控制插座开关。返回 True/False 表示操作结果，None 表示凭证可能过期"""
     action_text = "开启" if state_on else "关闭"
     logger.info(f"🔌 正在{action_text}插座电源...")
 
@@ -343,10 +447,21 @@ def set_device_power(connector, did, state_on=True):
     }
     params = {"data": json.dumps(data)}
 
-    result = connector.execute_api_call_encrypted(url, params)
+    try:
+        result = connector.execute_api_call_encrypted(url, params)
+    except Exception as e:
+        # API 调用本身异常 → 凭证很可能过期
+        logger.error(f"❌ API调用异常（凭证可能过期）: {e}")
+        return None
 
     if result is not None:
         code = result.get("code", -1)
+        # code != 0 且非设备离线 → 凭证过期
+        if code != 0 and code != -9999:
+            # 检查是否是认证失败
+            if "auth" in str(result).lower() or "token" in str(result).lower() or "expired" in str(result).lower():
+                logger.error(f"❌ API认证失败（凭证过期）: {result}")
+                return None
         # 检查每个参数的执行结果
         results = result.get("result", [])
         if isinstance(results, list) and len(results) > 0:
@@ -500,7 +615,7 @@ def qr_login():
 
 
 def main():
-    global _connector_ref, _manual_stop_requested
+    global _connector_ref, _manual_stop_requested, _consecutive_api_failures
 
     print()
     print(f"{Fore.CYAN}{'='*58}")
@@ -514,13 +629,25 @@ def main():
     print(f"{'='*58}")
     print()
 
-    # 尝试加载缓存凭证
+    # 尝试加载缓存凭证，失败则扫码登录
     connector = load_credentials()
 
     if connector is None:
-        connector = qr_login()
-        if connector is None:
+        # 静默模式（pythonw.exe）无法扫码，但不要退出！
+        # 等下一次循环再试，或者用户手动运行 python 版重新登录
+        if sys.stdout is None or not sys.stdin:
+            logger.warning("⚠️ 无缓存凭证且处于静默模式，跳过登录。请手动运行 python smart_charger.py 扫码登录一次")
+            show_notification("⚠️ 智能充电管理器", "无登录凭证，请手动运行 python smart_charger.py 扫码登录", icon='warning')
+        else:
+            connector = qr_login()
+
+    if connector is None:
+        if sys.stdout is None or not sys.stdin:
+            # 静默模式：不退出，等凭证文件出现后自动加载
+            logger.warning("⚠️ 无可用凭证，脚本将每次循环重试加载凭证文件")
+        else:
             logger.error("❌ 无法登录，程序退出")
+            show_notification("❌ 智能充电管理器", "登录失败，程序退出", icon='error')
             print("按回车退出...")
             try:
                 input()
@@ -538,23 +665,24 @@ def main():
     # 注册关机自动断电处理
     register_shutdown_handler()
 
-    homes = connector.get_homes(SERVER)
-    plug_found = False
-    if homes and "result" in homes and "homelist" in homes["result"]:
-        for h in homes["result"]["homelist"]:
-            devices = connector.get_devices(SERVER, h["id"], connector.userId)
-            if devices and "result" in devices and devices["result"].get("device_info"):
-                for dev in devices["result"]["device_info"]:
-                    if str(dev.get("did")) == PLUG_DID:
-                        plug_found = True
-                        online_status = "在线" if dev.get("isOnline") else "离线"
-                        logger.info(f"✅ 找到插座: {dev.get('name', 'AlmLbs')} ({online_status})")
-                        break
-            if plug_found:
-                break
+    if connector is not None:
+        homes = connector.get_homes(SERVER)
+        plug_found = False
+        if homes and "result" in homes and "homelist" in homes["result"]:
+            for h in homes["result"]["homelist"]:
+                devices = connector.get_devices(SERVER, h["id"], connector.userId)
+                if devices and "result" in devices and devices["result"].get("device_info"):
+                    for dev in devices["result"]["device_info"]:
+                        if str(dev.get("did")) == PLUG_DID:
+                            plug_found = True
+                            online_status = "在线" if dev.get("isOnline") else "离线"
+                            logger.info(f"✅ 找到插座: {dev.get('name', 'AlmLbs')} ({online_status})")
+                            break
+                if plug_found:
+                    break
 
-    if not plug_found:
-        logger.warning("⚠️ 未在设备列表中找到插座，但仍将尝试控制")
+        if not plug_found:
+            logger.warning("⚠️ 未在设备列表中找到插座，但仍将尝试控制")
 
     # 查询当前电池状态
     try:
@@ -564,6 +692,27 @@ def main():
         logger.error(f"❌ 无法读取电池: {e}")
         return
 
+    # 启动通知：告诉用户脚本已开始运行
+    show_notification(
+        "⚡ 智能充电管理器",
+        f"已启动！电量 {battery['percent']}% | {'充电中' if battery['plugged'] else '未充电'}"
+    )
+    # 写入状态文件（桌面可见）
+    write_status({
+        "status": "running",
+        "battery_percent": battery['percent'],
+        "is_charging": battery['plugged'],
+        "credential_valid": connector is not None,
+        "last_action": "started"
+    })
+
+    # 启动时根据充电状态决定是否阻止睡眠
+    if battery["plugged"]:
+        prevent_sleep()
+        logger.info("😴 已阻止系统睡眠（检测到正在充电）")
+    else:
+        allow_sleep()
+
     # 进入监控循环
     print()
     logger.info("🔄 开始监控电池电量...")
@@ -571,6 +720,7 @@ def main():
 
     last_action = None
     check_count = 0
+    _sleep_prevented = battery["plugged"]
 
     while True:
         try:
@@ -578,30 +728,90 @@ def main():
             pct = battery["percent"]
             plugged = battery["plugged"]
 
+            # 如果没有 connector，尝试加载凭证（可能是用户刚手动登录了）
+            if connector is None:
+                connector = load_credentials()
+                if connector is not None:
+                    _connector_ref = connector
+                    _consecutive_api_failures = 0
+                    logger.info("✅ 凭证已恢复，继续监控")
+                    show_notification("✅ 智能充电管理器", "登录凭证已恢复，继续监控电池电量")
+
             need_on = pct <= CHARGE_ON_THRESHOLD
             need_off = pct >= CHARGE_OFF_THRESHOLD
 
             action = None
 
-            if need_off and plugged and last_action != "off":
-                if set_device_power(connector, PLUG_DID, False):
-                    action = "off"
-            elif need_on and not plugged and last_action != "on":
-                if set_device_power(connector, PLUG_DID, True):
-                    action = "on"
+            if connector is not None:
+                if need_off and plugged and last_action != "off":
+                    result = set_device_power(connector, PLUG_DID, False)
+                    if result is True:
+                        action = "off"
+                        allow_sleep()
+                        _sleep_prevented = False
+                        logger.info("😴 已恢复系统自动睡眠（充电完成）")
+                        _consecutive_api_failures = 0
+                        show_notification("🔋 停止充电", f"电量 {pct}% ≥ {CHARGE_OFF_THRESHOLD}%，插座已断电")
+                        write_status({"status": "running", "battery_percent": pct, "is_charging": False, "credential_valid": True, "last_action": "off"})
+                    elif result is None:
+                        # 凭证可能过期
+                        _consecutive_api_failures += 1
+                        logger.warning(f"⚠️ API调用失败（连续 {_consecutive_api_failures} 次），凭证可能过期")
+                        if _consecutive_api_failures >= _MAX_API_FAILURES:
+                            logger.warning("⚠️ 连续API失败过多，尝试刷新凭证...")
+                            connector = refresh_credentials()
+                            if connector is not None:
+                                _connector_ref = connector
+                                _consecutive_api_failures = 0
+                                logger.info("✅ 凭证刷新成功，继续监控")
+                            else:
+                                connector = None
+                                _connector_ref = None
+                                logger.warning("⚠️ 凭证刷新失败，等待下次循环重试加载")
+                elif need_on and not plugged and last_action != "on":
+                    result = set_device_power(connector, PLUG_DID, True)
+                    if result is True:
+                        action = "on"
+                        prevent_sleep()
+                        _sleep_prevented = True
+                        logger.info("😴 已阻止系统睡眠（充电中，防止过充）")
+                        _consecutive_api_failures = 0
+                        show_notification("⚡ 开始充电", f"电量 {pct}% ≤ {CHARGE_ON_THRESHOLD}%，插座已通电")
+                        write_status({"status": "running", "battery_percent": pct, "is_charging": True, "credential_valid": True, "last_action": "on"})
+                    elif result is None:
+                        _consecutive_api_failures += 1
+                        logger.warning(f"⚠️ API调用失败（连续 {_consecutive_api_failures} 次），凭证可能过期")
+                        if _consecutive_api_failures >= _MAX_API_FAILURES:
+                            logger.warning("⚠️ 连续API失败过多，尝试刷新凭证...")
+                            connector = refresh_credentials()
+                            if connector is not None:
+                                _connector_ref = connector
+                                _consecutive_api_failures = 0
+                            else:
+                                connector = None
+                                _connector_ref = None
+                                logger.warning("⚠️ 凭证刷新失败，等待下次循环重试加载")
 
             if action:
                 last_action = action
             elif need_off and not plugged:
                 last_action = "off"
+                if _sleep_prevented:
+                    allow_sleep()
+                    _sleep_prevented = False
             elif need_on and plugged:
                 last_action = "on"
+                if not _sleep_prevented:
+                    prevent_sleep()
+                    _sleep_prevented = True
 
             # 状态显示
             status_icon = "🔋" if not plugged else "⚡"
             charge_text = "充电中" if plugged else "未充电"
             action_hint = ""
-            if need_off and plugged:
+            if connector is None:
+                action_hint = " [无凭证-跳过]"
+            elif need_off and plugged:
                 action_hint = " → 即将断电"
             elif need_on and not plugged:
                 action_hint = " → 即将通电"
@@ -614,16 +824,34 @@ def main():
             check_count += 1
             if check_count % 6 == 1:
                 logger.info(f"💓 存活检测 | 电量: {pct}% | {charge_text}{action_hint}")
+                # 更新状态文件
+                write_status({
+                    "status": "running",
+                    "battery_percent": pct,
+                    "is_charging": plugged,
+                    "credential_valid": connector is not None,
+                    "last_action": last_action or "none"
+                })
+                # 同时发桌面通知，让用户直观知道脚本还在跑
+                if connector is None:
+                    show_notification("⚠️ 智能充电管理器", f"电量 {pct}% | 凭证过期，等待重新登录", icon='warning')
+                else:
+                    show_notification("💓 智能充电管理器", f"运行正常 | 电量 {pct}% | {charge_text}")
 
         except KeyboardInterrupt:
             _manual_stop_requested = True
             logger.info("\n\n🛑 手动停止监控")
+            show_notification("🛑 智能充电管理器", "手动停止，脚本已退出")
             break
         except Exception as e:
             logger.error(f"监控出错: {e}", exc_info=True)
 
         time.sleep(CHECK_INTERVAL)
 
+    # 退出时恢复睡眠 + 通知 + 状态文件
+    allow_sleep()
+    show_notification("🔴 智能充电管理器", "已停止运行")
+    write_status({"status": "stopped", "battery_percent": 0, "is_charging": False, "credential_valid": False, "last_action": "exited"})
     print()
     logger.info("👋 程序已退出")
 

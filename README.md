@@ -19,6 +19,9 @@ Many laptops spend most of their life plugged in. If you already have a Mi Home 
 - Battery-aware charging: local battery status decides when to turn the plug on or off.
 - Mi Home QR login: scan once with the Mi Home app; credentials are cached locally.
 - Shutdown protection: console handler, `atexit`, and optional Windows scheduled task.
+- Sleep-safe charging: prevents Windows auto-sleep while charging, so the script keeps running and prevents overcharging.
+- Credential auto-recovery: if the Xiaomi token expires, the script stays alive and automatically reloads once you re-scan the QR code.
+- Status file: `smart_charger_status.json` is written to your Desktop every 10 minutes so you can instantly verify the script is still running.
 - Quiet startup: optional VBS launcher for background startup.
 - Local-first safety: device credentials and runtime logs stay on your machine.
 
@@ -111,21 +114,9 @@ It registers:
 
 ### 7. Optional: enable sleep-mode battery checks
 
-When the laptop sleeps, `smart_charger.py` pauses and cannot monitor battery.
-To keep monitoring while the PC sleeps, register a wake-up task:
+When the laptop sleeps, `smart_charger.py` pauses. The script resumes automatically when the laptop wakes up.
 
-Right-click this file and run it as administrator:
-
-```text
-注册唤醒检测任务.bat
-```
-
-It creates `SmartCharger_WakeCheck`, a Windows scheduled task that:
-- Wakes the PC from sleep every 10 minutes.
-- Runs `quick_check.py` (a lightweight one-shot battery check).
-- The PC goes back to sleep automatically after the check.
-
-This ensures your laptop still gets charged when idle, and stops charging when full, even while sleeping.
+> **Note:** The `注册唤醒检测任务.bat` and `quick_check.py` files are included for reference but are no longer the recommended approach. The main `smart_charger.py` now prevents the system from auto-sleeping while charging, which covers the common case without needing WakeToRun.
 
 ## Configuration
 
